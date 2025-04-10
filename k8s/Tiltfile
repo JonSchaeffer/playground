@@ -1,0 +1,78 @@
+# Load Tilt Extensions
+load('ext://configmap', 'configmap_create')
+load('ext://helm_resource', 'helm_resource', 'helm_repo')
+load('ext://namespace', 'namespace_create', 'namespace_inject')
+
+# Create relevant namespaces
+namespace_create('api-services', annotations=['linkerd.io/inject: enabled'])
+namespace_create('linkerd')
+namespace_create('ingress-nginx')
+namespace_create('linkerd-viz')
+# namespace_create('test', annotations=['linkerd.io/inject: enabled'])
+
+# Load Kubernetes manifest
+k8s_yaml("manifests/envoy.yaml")
+k8s_yaml("manifests/canary.yaml")
+k8s_yaml("manifests/ingress.yaml")
+# k8s_yaml("k8s/podinfo.yaml")
+# k8s_yaml("k8s/flagger-loadtester.yaml")
+# k8s_yaml("k8s/podinfo-canary.yaml")
+
+# Test Golang webhook server
+docker_build('webhook-gate-image', 'webserver/', dockerfile='webserver/Dockerfile')
+k8s_yaml('webserver/deployment.yaml')
+k8s_resource('webhook-gate', port_forwards=['0.0.0.0:8081:8080'])
+
+# Test Golang webhook server
+docker_build('webhook-image', 'webhook/', dockerfile='webhook/Dockerfile')
+k8s_yaml('webhook/deployment.yaml')
+# k8s_resource('webhook', port_forwards=['0.0.0.0:10001:10001'])
+#
+# Expose Envoy admin interface & service ports
+k8s_resource("envoy", port_forwards=['0.0.0.0:9901:9901', '0.0.0.0:10000:10000'], auto_init=True)
+k8s_resource("ingress-nginx", port_forwards=['0.0.0.0:8083:80'], auto_init=True)
+
+# Create a config map named 'envoy-config' from the 'minimal-envoy-config.yaml' file.
+configmap_create('envoy-config', from_file=['minimal-envoy-config.yaml=./manifests/minimal-envoy-config.yaml'], watch=True, namespace='api-services')
+
+# Install Reloader
+# helm_repo('stakater', 'https://stakater.github.io/stakater-charts')
+# helm_resource('reloader', 'stakater/reloader', namespace='api-services')
+
+# Install Linkerd Into Cluster
+# 1. Install linkerd-crds
+helm_repo('linkerd-stable', 'https://helm.linkerd.io/stable')
+helm_resource('linkerd-crds', 'linkerd-stable/linkerd-crds', namespace='linkerd')
+# 2. Install linkerd-control-plane
+helm_resource('linkerd-control-plane', 'linkerd-stable/linkerd-control-plane', namespace='linkerd', flags=['--set-file=identityTrustAnchorsPEM=./linkerd/ca.crt', '--set-file=identity.issuer.tls.crtPEM=./linkerd/issuer.crt', '--set-file=identity.issuer.tls.keyPEM=./linkerd/issuer.key'])
+# 3. Install linkerd-viz
+# helm_resource('linkerd-viz', 'linkerd-stable/linkerd-viz', namespace='linkerd-viz')
+# 4. Install linkerd-smi
+helm_repo('linkerd-smi-repo', 'https://linkerd.github.io/linkerd-smi')
+helm_resource('linkerd-smi', 'linkerd-smi-repo/linkerd-smi')
+
+
+# Install Flagger
+helm_repo('flagger-repo', 'https://flagger.app')
+helm_resource('flagger', 'flagger-repo/flagger', namespace='linkerd', flags=['--set=linkerdAuthPolicy.create=true', '--set=meshProvider=gatewayapi:v1beta1', '--set=metricsServer=http://prometheus.linkerd-viz:9090'])
+#helm_resource('flagger', 'flagger-repo/flagger', namespace='ingress-nginx', flags=['--set=prometheus.install=true', '--set=meshProvider=linkerd'])
+
+# Install Prometheus
+helm_repo('prometheus-community', 'https://prometheus-community.github.io/helm-charts')
+helm_resource('prometheus', 'prometheus-community/prometheus', namespace='api-services', flags=['--set=alertmanager.enabled=true', '--set=kube-state-metrics.enabled=false', '--set=prometheus-node-exporter.enabled=false', '--set=prometheus-pushgateway.enabled=false', '--values=./manifests/alert-manager.yaml'])
+k8s_resource("prometheus", port_forwards=['0.0.0.0:9093:9093'], auto_init=True)
+
+# Install Nginx-Ingress
+helm_repo('ingress-nginx-repo', 'https://kubernetes.github.io/ingress-nginx')
+helm_resource('ingress-nginx', 'ingress-nginx-repo/ingress-nginx', namespace='ingress-nginx', flags=['--set=controller.metrics.enabled=true', '--set=controller.podAnnotations.prometheus.io/scrape=true', '--set=controller.podAnnotations.prometheus.io/port=10254', '--set=controller.allowSnippetAnnotations=true', '--set=controller.config.annotations-risk-level=Critical']) 
+
+# Define dependencies to ensure resources come up in the right order.
+# k8s_resource('reloader', resource_deps=['stakater'])
+k8s_resource('linkerd-crds', resource_deps=['linkerd-stable'])
+k8s_resource('linkerd-control-plane', resource_deps=['linkerd-stable']) # This technically should be dependent on linkerd-crds, however it doesn't create an artifact that tilt use to identify the dep as "ready"
+k8s_resource('flagger', resource_deps=['flagger-repo', 'linkerd-control-plane'])
+k8s_resource('envoy', resource_deps=['linkerd-control-plane'])
+k8s_resource('prometheus', resource_deps=['prometheus-community'])
+#k8s_resource('podinfo', resource_deps=['linkerd-control-plane'])
+#k8s_resource('flagger-loadtester', resource_deps=['podinfo'])
+#k8s_resource('webhook-gate', resource_deps=['podinfo'])

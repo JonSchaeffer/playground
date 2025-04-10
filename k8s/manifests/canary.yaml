@@ -1,0 +1,81 @@
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: envoy
+  namespace: api-services
+spec:
+  provider: nginx
+  suspend: false
+  ingressRef:
+    apiVersion: extensions/v1beta1
+    kind: Ingress
+    name: envoy
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: envoy
+  service:
+    name: envoy
+    port: 10000 # container port
+  progressDeadlineSeconds: 60
+  analysis:
+    interval: 20s # TODO - really, we want this to be slower, but this is just for testing in dev
+    threshold: 1 
+    maxWeight: 75
+    stepWeights: [25, 50, 75]
+    metrics:
+      - name: "envoy-routes-loaded"
+        templateRef:
+          name: envoy-routes-loaded
+          namespace: api-services
+        thresholdRange:
+          max: 1 # This means the canary will fail if 5xx errors exceed 5%
+        interval: 15s
+    webhooks:
+    # - name: "traffic increase gate"
+    #   type: confirm-traffic-increase
+    #   url: http://webhook-gate.api-services.svc.cluster.local/gate/step/check
+    - name: "rollback"
+      type: rollback
+      url: http://webhook-gate.api-services.svc.cluster.local/gate/rollback/check
+    - name: "events"
+      type: event
+      url: http://webhook-gate.api-services.svc.cluster.local/gate/event
+
+---
+apiVersion: flagger.app/v1beta1
+kind: MetricTemplate
+metadata:
+  name: envoy-5xx-error-rate
+  namespace: api-services
+spec:
+  provider:
+    type: prometheus
+    address: http://prometheus-server.api-services.svc.cluster.local:9090
+  query: |
+    sum by (envoy_http_conn_manager_prefix) (irate(envoy_listener_http_downstream_rq_xx{envoy_response_code_class="5", envoy_http_conn_manager_prefix=~"ingress_http"}[45s]))
+# Metrics just for the canary:  sum by (envoy_http_conn_manager_prefix, app_kubernetes_io_component) (irate(envoy_listener_http_downstream_rq_xx{app_kubernetes_io_component="control-plane-gateway-canary",envoy_response_code_class="5", envoy_http_conn_manager_prefix=~"ingress_http"}[45s]))
+---
+apiVersion: flagger.app/v1beta1
+kind: MetricTemplate
+metadata:
+  name: envoy-routes-loaded
+  namespace: api-services
+spec:
+  provider:
+    type: prometheus
+    address: http://prometheus-server.api-services.svc.cluster.local:9090
+  query: |
+    sum by (envoy_rds_route_config, app_kubernetes_io_component) (increase(envoy_http_rds_update_failure[5m]))
+---
+# apiVersion: flagger.app/v1beta1
+# kind: MetricTemplate
+# metadata:
+#   name: envoy-2xx-rate
+#   namespace: api-services
+# spec:
+#   provider:
+#     type: prometheus
+#     address: http://flagger-prometheus.ingress-nginx:9090
+# query: |
+#   sum by (envoy_rds_route_config) (increase(envoy_http_rds_update_failure{site="$site", envoy_rds_route_config="api-shield-service-rds"}[1m])) == bool 0

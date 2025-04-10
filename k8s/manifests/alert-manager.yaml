@@ -1,0 +1,13 @@
+serverFiles:
+  alerting_rules.yml:
+    groups:
+    - name: flagger-alerts
+      rules:
+      - alert: FlaggerCanaryWeightIncreased
+        expr: flagger_canary_weight{workload="podinfo-primary", namespace="test"} > 0 and increase(flagger_canary_weight{workload="podinfo-primary", namespace="test"}[30s]) > 0
+        for: 1m
+        labels:
+          severity: info
+        annotations:
+          summary: "Canary weight for podinfo-primary increased to {{ $value | printf \"%.0f\" }}%"
+          description: "The canary weight for podinfo-primary in namespace test has increased to {{ $value | printf \"%.0f\" }}%. Deployment progressing."

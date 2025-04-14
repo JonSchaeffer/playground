@@ -1,13 +1,83 @@
+server:
+  global:
+    scrape_interval: 15s
+    evaluation_interval: 10s
+
 serverFiles:
   alerting_rules.yml:
     groups:
-    - name: flagger-alerts
+    - name: flagger-canary-alerts
       rules:
-      - alert: FlaggerCanaryWeightIncreased
-        expr: flagger_canary_weight{workload="podinfo-primary", namespace="test"} > 0 and increase(flagger_canary_weight{workload="podinfo-primary", namespace="test"}[30s]) > 0
-        for: 1m
+      # Alert when canary weight increases
+      - alert: CanaryWeightIncreased
+        expr: (flagger_canary_weight{workload=~"envoy", namespace="api-services"} > 0) and (flagger_canary_weight{workload=~"envoy", namespace="api-services"} offset 15s < flagger_canary_weight{workload=~"envoy", namespace="api-services"})
+        for: 0s
         labels:
           severity: info
         annotations:
-          summary: "Canary weight for podinfo-primary increased to {{ $value | printf \"%.0f\" }}%"
-          description: "The canary weight for podinfo-primary in namespace test has increased to {{ $value | printf \"%.0f\" }}%. Deployment progressing."
+          summary: "Canary weight increased to {{ $value | printf \"%.0f\" }}%"
+          description: "The canary weight for {{ $labels.workload }} has increased to {{ $value | printf \"%.0f\" }}%."
+
+      # Alert when primary weight increases (reverse traffic shifting)
+      - alert: PrimaryWeightIncreased
+        expr: (flagger_canary_weight{workload=~".*-primary", namespace="api-services"} > 0) and (flagger_canary_weight{workload=~".*-primary", namespace="api-services"} offset 15s < flagger_canary_weight{workload=~".*-primary", namespace="api-services"})
+        for: 0s
+        labels:
+          severity: info
+        annotations:
+          summary: "Primary weight increased to {{ $value | printf \"%.0f\" }}%"
+          description: "The primary weight for {{ $labels.workload }} has increased to {{ $value | printf \"%.0f\" }}%."
+
+
+      # Alert when canary has started
+      - alert: CanaryDeploymentStarted
+        expr: flagger_canary_status{namespace="api-services", name="envoy"} == 0 and (flagger_canary_status{namespace="api-services", name="envoy"} offset 30s != 0 or absent(flagger_canary_status{namespace="api-services", name="envoy"} offset 30s))
+        for: 0s
+        labels:
+          severity: info
+        annotations:
+          summary: "Canary deployment started"
+          description: "The canary deployment for {{ $labels.name }} has started."
+
+      # Alert when canary was successful
+      - alert: CanaryDeploymentSuccessful
+        expr: flagger_canary_status{namespace="api-services", name="envoy"} == 1 and (flagger_canary_status{namespace="api-services", name="envoy"} offset 30s != 1 or absent(flagger_canary_status{namespace="api-services", name="envoy"} offset 30s))
+        for: 20s
+        labels:
+          severity: info
+        annotations:
+          summary: "Canary deployment successful"
+          description: "The canary deployment for {{ $labels.name }} has completed successfully."
+
+      # Alert when canary failed (rollback happened)
+      - alert: CanaryDeploymentFailed
+        expr: flagger_canary_status{namespace="api-services", name="envoy"} == 2 and (flagger_canary_status{namespace="api-services", name="envoy"} offset 30s != 2 or absent(flagger_canary_status{namespace="api-services", name="envoy"} offset 30s))
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Canary deployment failed"
+          description: "The canary deployment for {{ $labels.name }} has failed and rolled back."
+
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['namespace', 'alertname']
+      group_wait: 0s
+      group_interval: 2s
+      repeat_interval: 12h
+      receiver: 'local-webhook'
+      routes:
+        - match:
+            severity: info
+          receiver: 'local-webhook'
+        - match:
+            severity: warning
+          receiver: 'local-webhook'
+    receivers:
+      - name: 'local-webhook'
+        webhook_configs:
+          - url: 'http://webhook.api-services.svc.cluster.local:10001'
+            send_resolved: false

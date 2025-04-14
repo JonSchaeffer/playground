@@ -19,18 +19,19 @@ spec:
     port: 10000 # container port
   progressDeadlineSeconds: 60
   analysis:
-    interval: 20s # TODO - really, we want this to be slower, but this is just for testing in dev
+    interval: 60s # TODO - really, we want this to be slower, but this is just for testing in dev
     threshold: 1 
-    maxWeight: 75
-    stepWeights: [25, 50, 75]
+    maxWeight: 100
+    stepWeights: [25, 50]
+    stepWeightPromotion: 25
     metrics:
-      - name: "envoy-routes-loaded"
-        templateRef:
-          name: envoy-routes-loaded
-          namespace: api-services
-        thresholdRange:
-          max: 1 # This means the canary will fail if 5xx errors exceed 5%
-        interval: 15s
+    #   - name: "envoy-routes-loaded"
+    #     templateRef:
+    #       name: envoy-routes-loaded
+    #       namespace: api-services
+    #     thresholdRange:
+    #       max: 1 # This means the canary will fail if 5xx errors exceed 5%
+    #     interval: 15s
     webhooks:
     # - name: "traffic increase gate"
     #   type: confirm-traffic-increase

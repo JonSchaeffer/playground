@@ -1,0 +1,16 @@
+services:
+  envoy:
+    image: envoyproxy/envoy:v1.37.3
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "10000:10000"
+      - "9901:9901"
+    depends_on:
+      - secondary
+
+  # Secondary backend - the retry target (always healthy)
+  secondary:
+    image: mendhak/http-https-echo:33
+    environment:
+      HTTP_PORT: 8080

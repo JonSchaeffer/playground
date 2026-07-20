@@ -1,0 +1,102 @@
+# Minimal Envoy config demonstrating the composite cluster retry bug.
+#
+# composite_cluster has two sub-clusters:
+#   - primary_cluster: points to "does-not-exist" (0 hosts — DNS never resolves)
+#   - secondary_cluster: points to "secondary" (healthy echo server)
+#
+# Expected: request retries from primary (0 hosts) to secondary
+# Actual: 503 "no healthy upstream" with no retry attempted
+
+static_resources:
+  listeners:
+    - name: main
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: ingress
+                codec_type: AUTO
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: backend
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: composite_cluster
+                            timeout: 5s
+                            retry_policy:
+                              retry_on: "gateway-error,reset,connect-failure,retriable-status-codes"
+                              retriable_status_codes: [503]
+                              num_retries: 1
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # Composite cluster: attempt 1 → primary_cluster, retry → secondary_cluster
+    - name: composite_cluster
+      connect_timeout: 0.5s
+      lb_policy: CLUSTER_PROVIDED
+      cluster_type:
+        name: envoy.clusters.composite
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.composite.v3.ClusterConfig
+          clusters:
+            - name: primary_cluster
+            - name: secondary_cluster
+
+    # Sub-cluster 1: ZERO HOSTS (DNS hostname does not resolve)
+    # This simulates a sub-cluster where all endpoints have been removed,
+    # the DNS record has been cleaned up, or the backing service is gone.
+    - name: primary_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      dns_refresh_rate: 1s
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: primary_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: does-not-exist.invalid
+                      port_value: 8080
+
+    # Sub-cluster 2: healthy echo server
+    - name: secondary_cluster
+      connect_timeout: 1s
+      type: STRICT_DNS
+      dns_refresh_rate: 1s
+      lb_policy: ROUND_ROBIN
+      health_checks:
+        - timeout: 1s
+          interval: 2s
+          unhealthy_threshold: 1
+          healthy_threshold: 1
+          http_health_check:
+            path: /
+      load_assignment:
+        cluster_name: secondary_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: secondary
+                      port_value: 8080
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
